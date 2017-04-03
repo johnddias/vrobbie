@@ -1,0 +1,54 @@
+{
+  "intents": [
+    {
+      "slots": [
+      {
+        "name": "resource",
+        "type": "LIST_OF_RESOURCES"
+      },
+      {
+        "name": "badge",
+        "type": "LIST_OF_BADGES"
+      }
+    ],
+    "intent": "HealthStatusIntent"
+  },
+  {
+    "slots": [
+      {
+        "name": "criticality",
+        "type": "LIST_OF_CRITICALITY"
+      },
+      {
+        "name": "resource",
+        "type": "LIST_OF_RESOURCES"
+      }
+    ],
+      "intent": "ListAlertsIntent"
+    },
+    {
+      "intent": "AMAZON.ResumeIntent"
+    },
+    {
+      "intent": "AMAZON.PauseIntent"
+    },
+    {
+      "intent": "goodbyeIntent"
+    },
+    {
+      "intent": "AMAZON.StopIntent"
+    },
+    {
+      "intent": "AMAZON.RepeatIntent"
+    },
+    {
+      "intent": "AMAZON.CancelIntent"
+    },
+    {
+      "intent": "AMAZON.YesIntent"
+    },
+    {
+      "intent": "AMAZON.NoIntent"
+    }
+  ]
+}

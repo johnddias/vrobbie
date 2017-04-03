@@ -1,0 +1,2 @@
+HealthStatusIntent Get {badge} of {resource}
+AMAZON.StopIntent goodbye
