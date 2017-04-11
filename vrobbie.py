@@ -15,11 +15,11 @@ from flask_ask import Ask, statement, question, session
 
 bearertoken = ""
 # Edit with IP or FQDN of vrops node
-vropsHost = ""
+vropsHost = "10.140.50.30"
 # Authentication is intially via credentials set.  Subsequent calls use a
 # bearer token.
-vropsuser = ""
-vropspassword = ""
+vropsuser = "admin"
+vropspassword = "VMware1!"
 vropsauthsource = "local"
 # For some labs, using self-signed will result in error during request due to cert check
 # flip this flag to False to bypass certificate checking in those cases
@@ -35,6 +35,74 @@ logging.getLogger("flask_ask").setLevel(logging.DEBUG)
 # - Handling voice service errors
 # - Parsing and preparing response_msg
 ##############################################
+
+def more_info():
+    if session.attributes["CurrentTree"] == "Alerts":
+            resource = vropsRequest("api/resources/"+session.attributes["CurrentObject"],"GET")
+
+            alertsQueryPayload = {
+                        'resource-query': {
+                            'resourceId': [session.attributes["CurrentObject"]]
+                        },
+                        'activeOnly': True
+                }
+            resourceAlerts = vropsRequest("api/alerts/query","POST",payload=alertsQueryPayload)
+
+            resourceName = resource["resourceKey"]["name"]
+            resourceHealth = resource["resourceHealth"]
+            resourceAlertCount = resourceAlerts["pageInfo"]["totalCount"]
+
+            outputSpeech = "The resource; {0}; is; {1}; for health status.  There are {2} alerts associated with this resource.  Shall I read those alerts?".format(resourceName, resourceHealth, resourceAlertCount)
+
+            with open("sessionData/"+session.sessionId+"resAlerts", 'w') as outfile:
+                json.dump(resourceAlerts, outfile)
+            session.attributes["ResAlertsIndex"] = 0
+            session.attributes["CurrentTree"] = "Resource"
+
+            return outputSpeech
+
+
+def continues():
+    if session.attributes["CurrentTree"] == "Alerts":
+        with open("sessionData/"+session.sessionId+"badgeAlerts", 'r') as alertsFile:
+            alerts = ""
+            alerts = json.load(alertsFile)
+            criticalAlerts = alerts_by_sev(alerts,"CRITICAL")
+            alert = criticalAlerts[session.attributes["AlertsIndex"]]
+            alertDefinition = alert["alertDefinitionName"]
+            resource = vropsRequest(alert["links"][1]["href"][10:] ,"GET")
+            resourceName = resource["resourceKey"]["name"]
+            if (len(criticalAlerts)-1 == session.attributes["AlertsIndex"]):
+                outputSpeech = "The resource; {0}; has a critical alert, {1}.  There are no more cirtical alerts.  Would you like more information on this resource?".format(resourceName, alertDefinition)
+            else:
+                outputSpeech = "The resource; {0}; has a critical alert, {1}.  Next alert or more information on this resource?".format(resourceName, alertDefinition)
+                session.attributes["AlertsIndex"] += 1
+
+            session.attributes["CurrentObject"] = resource["identifier"]
+
+            return outputSpeech
+
+    if session.attributes["CurrentTree"] == "Resource":
+        with open("sessionData/"+session.sessionId+"resAlerts", 'r') as alertsFile:
+            alerts = ""
+            alerts = json.load(alertsFile)
+            criticalAlerts = alerts_by_sev(alerts,"CRITICAL")
+            alert = criticalAlerts[session.attributes["ResAlertsIndex"]]
+            alertDefinition = alert["alertDefinitionName"]
+            resource = vropsRequest(alert["links"][1]["href"][10:] ,"GET")
+            resourceName = resource["resourceKey"]["name"]
+            if (len(criticalAlerts)-1 == session.attributes["ResAlertsIndex"]):
+                outputSpeech = "The resource; {0}; has a critical alert, {1}.  There are no more alerts.  Would you like more information on this alert?".format(resourceName, alertDefinition)
+            elif len(criticalAlerts) == 0:
+                outputSpeech = "Reading active alerts from newest to oldest.  The resource; {0}; has a critical alert, {1}.  Next alert or more information on this alert?".format(resourceName, alertDefinition)
+                session.attributes["ResAlertsIndex"] += 1
+            else:
+                outputSpeech = "The resource; {0}; has a critical alert, {1}.  Next alert or more information on this alert?".format(resourceName, alertDefinition)
+                session.attributes["ResAlertsIndex"] += 1
+
+            session.attributes["CurrentAlert"] = alert["alertId"]
+
+            return outputSpeech
 
 def vropsGetToken(user=vropsuser, passwd=vropspassword, authSource=vropsauthsource, host=vropsHost):
     if not bearertoken:
@@ -133,9 +201,11 @@ def group_alerts(alerts):
     return groupedAlerts
 
 def sessionCleanup():
-    if os.path.exists("sessionData/"+session.sessionId):
-        os.remove("sessionData/"+session.sessionId)
-
+    dir = "sessionData"
+    files = os.listdir(dir)
+    for file in files:
+        if file.startswith(session.sessionId):
+            os.remove(os.path.join(dir,file))
 
 #####################################################
 # Invocations
@@ -149,44 +219,21 @@ def welcome_msg():
 
 @ask.intent('AMAZON.YesIntent')
 
-def continues():
-    if session.attributes["CurrentTree"] == "Alerts":
-        with open("sessionData/"+session.sessionId, 'r') as alertsFile:
-            alerts = ""
-            alerts = json.load(alertsFile)
-            criticalAlerts = alerts_by_sev(alerts,"CRITICAL")
-            alert = criticalAlerts[session.attributes["AlertsIndex"]]
-            alertDefinition = alert["alertDefinitionName"]
-            resource = vropsRequest(alert["links"][1]["href"][10:] ,"GET")
-            resourceName = resource["resourceKey"]["name"]
-            outputSpeech = "The resource; {0}; has a critical alert, {1}.  Next alert or more information?".format(resourceName, alertDefinition)
-            session.attributes["CurrentObject"] = resource["identifier"]
-            session.attributes["AlertsIndex"] += 1
-            return question(outputSpeech)
-#    if session.attributes["CurrentTree"] == "Resource":
+def yesIntent():
+    outputSpeech = continues()
+    return question(outputSpeech)
+
+@ask.intent('AMAZON.NextIntent')
+
+def nextIntent():
+    outputSpeech = continues()
+    return question(outputSpeech)
 
 @ask.intent('MoreInformationIntent')
 
-def more_info():
-    if session.attributes["CurrentTree"] == "Alerts":
-            session.attributes["CurrentTree"] = "Resource"
-            resource = vropsRequest("api/resources/"+session.attributes["CurrentObject"],"GET")
-
-            alertsQueryPayload = {
-                        'resource-query': {
-                            'resourceId': [session.attributes["CurrentObject"]]
-                        },
-                        'activeOnly': True
-                }
-            resourceAlerts = vropsRequest("api/alerts/query","POST",payload=alertsQueryPayload)
-
-            resourceName = resource["resourceKey"]["name"]
-            resourceHealth = resource["resourceHealth"]
-            resourceAlertCount = resourceAlerts["pageInfo"]["totalCount"]
-            outputSpeech = "The resource; {0}; is; {1}; for health status.  There are {2} alerts associated with this resource.  Shall I read those alerts?".format(resourceName, resourceHealth, resourceAlertCount)
-            return question(outputSpeech)
-
-
+def MoreInformationIntent():
+    outputSpeech = more_info()
+    return question(outputSpeech)
 
 @ask.intent('HealthStatusIntent')
 
@@ -211,7 +258,7 @@ def health_status(badge, resource):
     speech_output = "There are " + numAllAlerts + " " + badge + " alerts for monitored " + speechify_resource_intent(resource,1) + ". "  + \
                      "Of those " + numCriticalAlerts + " are critical and " + numImmediateAlerts + " are immediate.  Shall I read the critical alerts?"
 
-    with open("sessionData/"+session.sessionId, 'w') as outfile:
+    with open("sessionData/"+session.sessionId+"badgeAlerts", 'w') as outfile:
         json.dump(alerts, outfile)
     session.attributes["AlertsIndex"] = 0
     session.attributes["CurrentTree"] = "Alerts"
