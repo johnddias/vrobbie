@@ -37,7 +37,9 @@ logging.getLogger("flask_ask").setLevel(logging.DEBUG)
 ##############################################
 
 def more_info():
+    #Called when user wants more information on the impacted resource from the Alerts tree
     if session.attributes["CurrentTree"] == "Alerts":
+
             resource = vropsRequest("api/resources/"+session.attributes["CurrentObject"],"GET")
 
             alertsQueryPayload = {
@@ -61,6 +63,20 @@ def more_info():
 
             return outputSpeech
 
+    #Called when user wants more information on an alert from the Resource tree
+    if session.attributes["CurrentTree"] == "Resource":
+            alert = vropsRequest("api/alerts/"+session.attributes["CurrentAlert"],"GET")
+            alertDef = vropsRequest("api/alertdefinitions/"+alert["alertDefinitionId"],"GET")
+            alertDesc = alertDef["description"]
+            recommendations=alertDef["states"][0]["recommendationPriorityMap"]
+            if (len(recommendations) == 1):
+                recQualifier = "only"
+            else:
+                recQualifier = "first"
+            recDesc = vropsRequest("api/recommendations/"+recommendations.keys()[0],"GET")
+
+            outputSpeech = "{0}.  The {1} recommendation is as follows; {2}".format(alertDesc, recQualifier, recDesc["description"])
+            return outputSpeech
 
 def continues():
     if session.attributes["CurrentTree"] == "Alerts":
