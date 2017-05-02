@@ -7,20 +7,21 @@ import time
 import re
 import sys
 import os
-
+from operator import itemgetter
+from itertools import groupby
 from flask import Flask, render_template
 from flask_ask import Ask, statement, question, session
 
 # Vars and Configurations
-
 bearertoken = ""
+
 # Edit with IP or FQDN of vrops node
-vropsHost = "10.140.50.30"
+vropsHost = ""
 # Authentication is intially via credentials set.  Subsequent calls use a
 # bearer token.
-vropsuser = "admin"
-vropspassword = "VMware1!"
-vropsauthsource = "local"
+vropsuser = ""
+vropspassword = ""
+vropsauthsource = ""
 # For some labs, using self-signed will result in error during request due to cert check
 # flip this flag to False to bypass certificate checking in those cases
 verify = False
@@ -80,6 +81,25 @@ def more_info():
 
 def continues():
     if session.attributes["CurrentTree"] == "Alerts":
+        with open("sessionData/"+session.sessionId+"badgeAlerts", 'r') as alertsFile:
+            alerts = ""
+            alerts = json.load(alertsFile)
+            criticalAlerts = alerts_by_sev(alerts,"CRITICAL")
+            alert = criticalAlerts[session.attributes["AlertsIndex"]]
+            alertDefinition = alert["alertDefinitionName"]
+            resource = vropsRequest(alert["links"][1]["href"][10:] ,"GET")
+            resourceName = resource["resourceKey"]["name"]
+            if (len(criticalAlerts)-1 == session.attributes["AlertsIndex"]):
+                outputSpeech = "The resource; {0}; has a critical alert, {1}.  There are no more cirtical alerts.  Would you like more information on this resource?".format(resourceName, alertDefinition)
+            else:
+                outputSpeech = "The resource; {0}; has a critical alert, {1}.  Next alert or more information on this resource?".format(resourceName, alertDefinition)
+                session.attributes["AlertsIndex"] += 1
+
+            session.attributes["CurrentObject"] = resource["identifier"]
+
+            return outputSpeech
+
+    if session.attributes["CurrentTree"] == "GroupedAlerts":
         with open("sessionData/"+session.sessionId+"badgeAlerts", 'r') as alertsFile:
             alerts = ""
             alerts = json.load(alertsFile)
@@ -172,17 +192,23 @@ def vropsRequest(request,method,querystring="",payload=""):
         response = requests.request(method, url, headers=headers, verify=verify)
 
     print ("Request " + response.url + " returned status " + str(response.status_code))
+    print payload
     return response.json()
 
 def translate_resource_intent(resource):
-    print("Stated intent " + resource)
+    #print("Stated intent " + resource)
     resString = ""
     vropsResKindString = {
         'bms':'virtualmachine',
+        'bm':'virtualmachine',
         'vms':'virtualmachine',
+        'vm':'virtualmachine',
         'hosts': 'hostsystem',
+        'host': 'hostsystem',
         'clusters': 'clustercomputeresource',
-        'datastores': 'datastore'
+        'cluster': 'clustercomputeresource',
+        'datastores': 'datastore',
+        'datastore': 'datastore'
     }
 #    if intent['slots']['resource']['value'] in vropsResKindString:
     resString = vropsResKindString.get(resource.lower())
@@ -191,6 +217,11 @@ def translate_resource_intent(resource):
 def speechify_resource_intent(resource,plurality):
         vocalString = ""
         vocalStrings = {
+            'bm':'virtual machine',
+            'vm':'virtual machine',
+            'host': 'host system',
+            'cluster': 'cluster',
+            'datastore': 'data store',
             'bms':'virtual machine',
             'vms':'virtual machine',
             'hosts': 'host system',
@@ -211,9 +242,12 @@ def alerts_by_sev(alerts,sev):
                 filteredAlerts.append(alert)
     return filteredAlerts
 
-def group_alerts(alerts):
+def group_alerts_by_def(alerts,groupkey):
+    sortedAlerts = sorted(alerts, key=itemgetter(groupkey))
     groupedAlerts = []
-    groupedAlerts = Counter(alerts)
+    for key, items in groupby(sortedAlerts, itemgetter(groupkey)):
+        groupedAlerts.append(list(items))
+
     return groupedAlerts
 
 def sessionCleanup():
@@ -251,9 +285,42 @@ def MoreInformationIntent():
     outputSpeech = more_info()
     return question(outputSpeech)
 
-@ask.intent('HealthStatusIntent')
+@ask.intent('GroupAlertsIntent')
+#Starts a tree to read active alerts grouped by alert definition for the stated resource kind
+#and criticality.  Alert definitions are read by group with option list individual alerts in a group
+def group_criticality_alerts(criticality, resource):
+    request = "api/alerts/query"
+    method  = "POST"
+    payload = {
+        'resource-query': {
+            'resourceKind': [translate_resource_intent(resource)]
+        },
+        'activeOnly': True,
+        'alertCriticality': [criticality.upper()]
+    }
 
-def health_status(badge, resource):
+    alerts = vropsRequest(request,method,payload=payload)
+
+    numAllAlerts = str(alerts["pageInfo"]["totalCount"])
+
+    speech_output = "There are " + numAllAlerts + " " + criticality + " alerts for monitored " + speechify_resource_intent(resource,1) + ". " + \
+                    "Shall I read the alerts by alert definition?"
+
+    groupedAlerts = []
+    groupedAlerts = group_alerts_by_def(alerts['alerts'],'alertDefinitionId')
+
+    with open("sessionData/"+session.sessionId+"groupAlerts", 'w') as outfile:
+        json.dump(groupedAlerts, outfile)
+
+    session.attributes["AlertsIndex"] = 0
+    session.attributes["CurrentTree"] = "GroupedAlerts"
+
+    return question(speech_output)
+
+@ask.intent('ListBadgeAlertsIntent')
+#Starts a tree to read active alerts for the stated resource kind for a major badge.
+#Alerts are read individually with option for more info depth for a resource
+def list_badge_alerts(badge, resource):
     request = "api/alerts/query"
     method = "POST"
     payload = {
