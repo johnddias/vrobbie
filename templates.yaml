@@ -2,3 +2,8 @@ ASK_VERIFY_REQUESTS: True
 ASK_APPLICATION_ID: amzn1.ask.skill.996508d5-2590-44b1-8c5f-46ec76b13b79
 welcome: vRobbie is ready.
 goodbye: vRobbie is shutting down.
+backgroundImageURL: https://s3-us-west-2.amazonaws.com/blackmesaresearch/turtles.png
+alertcriticalImageURL: https://s3-us-west-2.amazonaws.com/blackmesaresearch/critical.png
+alertwarningImageURL: https://s3-us-west-2.amazonaws.com/blackmesaresearch/warning.png
+alertimmediateImageURL: https://s3-us-west-2.amazonaws.com/blackmesaresearch/immediate.png
+alertinfoImageURL: https://s3-us-west-2.amazonaws.com/blackmesaresearch/info.png

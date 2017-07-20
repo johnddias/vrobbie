@@ -16,12 +16,12 @@ from flask_ask import Ask, statement, question, session
 bearertoken = ""
 
 # Edit with IP or FQDN of vrops node
-vropsHost = ""
+vropsHost = "10.140.50.30"
 # Authentication is intially via credentials set.  Subsequent calls use a
 # bearer token.
-vropsuser = ""
-vropspassword = ""
-vropsauthsource = ""
+vropsuser = "admin"
+vropspassword = "VMware1!"
+vropsauthsource = "local"
 # For some labs, using self-signed will result in error during request due to cert check
 # flip this flag to False to bypass certificate checking in those cases
 verify = False
@@ -79,6 +79,18 @@ def more_info():
             outputSpeech = "{0}.  The {1} recommendation is as follows; {2}".format(alertDesc, recQualifier, recDesc["description"])
             return outputSpeech
 
+    #Called when user wants more information on groups of alerts for a definition
+    if session.attributes["CurrentTree"] == "GroupedAlerts":
+            payload = json.loads('{"resourceId":'+ json.dumps(session.attributes["impactedResources"]) +'}')
+            resources = vropsRequest("api/resources/query","POST",payload=payload)
+            resourceList = resources["resourceList"]
+            resourceNames = ""
+            for res in resourceList:
+                resourceNames = resourceNames + (res["resourceKey"]["name"]) + ", "
+            session.attributes["res"] = resourceNames
+            outputSpeech = resourceNames
+            return outputSpeech
+
 def continues():
     if session.attributes["CurrentTree"] == "Alerts":
         with open("sessionData/"+session.sessionId+"badgeAlerts", 'r') as alertsFile:
@@ -100,21 +112,29 @@ def continues():
             return outputSpeech
 
     if session.attributes["CurrentTree"] == "GroupedAlerts":
-        with open("sessionData/"+session.sessionId+"badgeAlerts", 'r') as alertsFile:
+        with open("sessionData/"+session.sessionId+"groupAlerts", 'r') as alertsFile:
             alerts = ""
             alerts = json.load(alertsFile)
-            criticalAlerts = alerts_by_sev(alerts,"CRITICAL")
-            alert = criticalAlerts[session.attributes["AlertsIndex"]]
-            alertDefinition = alert["alertDefinitionName"]
-            resource = vropsRequest(alert["links"][1]["href"][10:] ,"GET")
-            resourceName = resource["resourceKey"]["name"]
-            if (len(criticalAlerts)-1 == session.attributes["AlertsIndex"]):
-                outputSpeech = "The resource; {0}; has a critical alert, {1}.  There are no more cirtical alerts.  Would you like more information on this resource?".format(resourceName, alertDefinition)
-            else:
-                outputSpeech = "The resource; {0}; has a critical alert, {1}.  Next alert or more information on this resource?".format(resourceName, alertDefinition)
-                session.attributes["AlertsIndex"] += 1
+            definition = alerts[session.attributes["AlertsIndex"]]
+            alertDefinition = definition[0]["alertDefinitionName"]
+            impactedResources = []
+            for res in definition:
+                impactedResources.append(res["resourceId"])
 
-            session.attributes["CurrentObject"] = resource["identifier"]
+            session.attributes["impactedResources"] = impactedResources
+            session.attributes["alertDefinition"] = alertDefinition
+
+            numOfResources = len(definition)
+            if numOfResources == 1:
+                resourceText = "resource is"
+            else:
+                resourceText = "resources are"
+
+            if (len(alerts)-1 == session.attributes["AlertsIndex"]):
+                outputSpeech = "For the alert. {0}. {1} {2} impacted.  There are no more alerts.  More information on this alert?".format(alertDefinition, numOfResources, resourceText)
+            else:
+                outputSpeech = "For the alert. {0}. {1} {2} impacted. Next alert or more info?".format(alertDefinition, numOfResources, resourceText)
+                session.attributes["AlertsIndex"] += 1
 
             return outputSpeech
 
@@ -140,15 +160,57 @@ def continues():
 
             return outputSpeech
 
+def backout():
+    if session.attributes["CurrentTree"] == "Resource":
+        session.attributes["CurrentTree"] = "Alerts"
+        outputSpeech = "Returning to Critical Alerts list."
+    elif session.attributes["CurrentTree"] == "GroupedAlerts":
+        session.attributes["CurrentTree"] = ""
+        outputSpeech = "I am waiting for your query"
+    elif session.attributes["CurrentTree"] == "Alerts":
+        sessionCleanup()
+        session.attributes["CurrentTree"] = ""
+        outputSpeech = "I am waiting for your query"
+    else:
+        sessionCleanup()
+        outputSpeech = "I am waiting for your query"
+    return outputSpeech
+
+#def list_builder(list):
+
+def interactive_resp(data):
+    if session.attributes["CurrentTree"] == "GroupedAlerts":
+        respList = data.split(", ")
+        listItems = []
+        for res in respList:
+            listItem = {
+                "textContent": {
+                    "primaryText": {
+                        "text":res,
+                        "type":"PlainText"
+                    }
+                }
+            }
+            listItems.append(listItem)
+
+
+    enhancedResponse = question("Here are the impacted objects.").list_display_render(template="ListTemplate1", title="Impacted Objects", backButton="VISIBILE", token=None, \
+    background_image_url=render_template('backgroundImageURL'), listItems=listItems)
+
+    return enhancedResponse
+
 def vropsGetToken(user=vropsuser, passwd=vropspassword, authSource=vropsauthsource, host=vropsHost):
     if not bearertoken:
         url = "https://" + host + "/suite-api/api/auth/token/acquire"
-        payload = "{\r\n  \"username\" : \"" + vropsuser + "\",\r\n  \"authSource\" : \"" + authSource + "\",\r\n  \"password\" : \"" + vropspassword + "\",\r\n  \"others\" : [ ],\r\n  \"otherAttributes\" : {\r\n  }\r\n}"
+        payload = "{\r\n  \"username\" : \"" + vropsuser + "\",\r\n  \"authSource\" : \"" + vropsauthsource + "\",\r\n  \"password\" : \"" + vropspassword + "\",\r\n  \"others\" : [ ],\r\n  \"otherAttributes\" : {\r\n  }\r\n}"
+        print payload
+        print url
         headers = {
             'accept': "application/json",
             'content-type': "application/json",
             }
         response = requests.request("POST", url, data=payload, headers=headers, verify=verify)
+        print response.text
         return response.text
     elif int(bearertoken["validity"])/1000 < time.time():
         url = "https://" + host + "/suite-api/api/versions"
@@ -159,7 +221,7 @@ def vropsGetToken(user=vropsuser, passwd=vropspassword, authSource=vropsauthsour
         response = requests.request("GET", url, headers=headers, verify=verify)
         if response.status_code == 401:
             url = "https://" + host + "/suite-api/api/auth/token/acquire"
-            payload = "{\r\n  \"username\" : \"" + vropsuser + "\",\r\n  \"authSource\" : \"" + vroauthsource + "\",\r\n  \"password\" : \"" + vropspassword + "\",\r\n  \"others\" : [ ],\r\n  \"otherAttributes\" : {\r\n  }\r\n}"
+            payload = "{\r\n  \"username\" : \"" + vropsuser + "\",\r\n  \"authSource\" : \"" + vropsauthsource + "\",\r\n  \"password\" : \"" + vropspassword + "\",\r\n  \"others\" : [ ],\r\n  \"otherAttributes\" : {\r\n  }\r\n}"
             headers = {
             'accept': "application/json",
             'content-type': "application/json",
@@ -174,7 +236,7 @@ def vropsGetToken(user=vropsuser, passwd=vropspassword, authSource=vropsauthsour
 def vropsRequest(request,method,querystring="",payload=""):
     global bearertoken
     bearertoken = json.loads(vropsGetToken())
-
+    print bearertoken
     url = "https://" + vropsHost + "/suite-api/" + request
     querystring = querystring
     headers = {
@@ -247,7 +309,6 @@ def group_alerts_by_def(alerts,groupkey):
     groupedAlerts = []
     for key, items in groupby(sortedAlerts, itemgetter(groupkey)):
         groupedAlerts.append(list(items))
-
     return groupedAlerts
 
 def sessionCleanup():
@@ -265,24 +326,75 @@ def sessionCleanup():
 
 def welcome_msg():
     welcome_msg = render_template('welcome')
-    return question(welcome_msg)
+    textContent = {
+        'primaryText': {
+        'text':'Intelligent Operations',
+        'type':'PlainText'
+        }
+    }
+    return question(welcome_msg).display_render(
+    title='Welcome to vRealize Operations',template="BodyTemplate2",text=textContent,background_image_url=render_template('backgroundImageURL'),hintText="Get Critical VM alerts")
 
 @ask.intent('AMAZON.YesIntent')
 
 def yesIntent():
     outputSpeech = continues()
-    return question(outputSpeech)
+    textContent = {
+        'primaryText': {
+        'text':outputSpeech,
+        'type':'PlainText'
+        }
+    }
+    title = 'Welcome to vRealize Operations'
+    image = ""
+    if (session.attributes["CurrentTree"] == "GroupedAlerts"):
+        title = "Alerts by Definition"
+        image = render_template('alert' + criticality + 'ImageURL')
+
+    return question(outputSpeech).display_render(
+    title=title,template="BodyTemplate2",text=textContent,background_image_url=render_template('backgroundImageURL'),image=image)
 
 @ask.intent('AMAZON.NextIntent')
 
 def nextIntent():
     outputSpeech = continues()
-    return question(outputSpeech)
+    return question(outputSpeech).display_render(
+    title='Welcome to vRealize Operations',template="BodyTemplate2",text=textContent,background_image_url=render_template('backgroundImageURL'))
 
 @ask.intent('MoreInformationIntent')
 
 def MoreInformationIntent():
     outputSpeech = more_info()
+    textContent = {
+        'primaryText': {
+        'text':outputSpeech,
+        'type':'PlainText'
+        }
+    }
+    if (session.attributes["CurrentTree"] == "GroupedAlerts"):
+        enhancedResponse = interactive_resp(outputSpeech)
+        return enhancedResponse
+    else:
+        return question(outputSpeech).display_render(
+        title='Welcome to vRealize Operations',template="BodyTemplate2",text=textContent,background_image_url=render_template('backgroundImageURL'))
+
+@ask.intent('AMAZON.NoIntent')
+
+def noIntent():
+    outputSpeech = backout()
+    textContent = {
+    'primaryText': {
+        'text':'Intelligent Operations',
+        'type':'PlainText'
+        }
+    }
+    return question(outputSpeech).display_render(
+    title='Welcome to vRealize Operations',template="BodyTemplate2",text=textContent,background_image_url=render_template('backgroundImageURL'))
+
+@ask.intent('Amazon.CancelIntent')
+
+def cancelIntent():
+    outputSpeech = backout()
     return question(outputSpeech)
 
 @ask.intent('GroupAlertsIntent')
@@ -305,7 +417,12 @@ def group_criticality_alerts(criticality, resource):
 
     speech_output = "There are " + numAllAlerts + " " + criticality + " alerts for monitored " + speechify_resource_intent(resource,1) + ". " + \
                     "Shall I read the alerts by alert definition?"
-
+    textContent = {
+            'primaryText': {
+            'text': speech_output,
+            'type':'PlainText'
+            }
+    }
     groupedAlerts = []
     groupedAlerts = group_alerts_by_def(alerts['alerts'],'alertDefinitionId')
 
@@ -314,8 +431,9 @@ def group_criticality_alerts(criticality, resource):
 
     session.attributes["AlertsIndex"] = 0
     session.attributes["CurrentTree"] = "GroupedAlerts"
-
-    return question(speech_output)
+    title = "Total " + criticality + " alerts for " + speechify_resource_intent(resource,1) + "."
+    return question(speech_output).display_render(
+    title=title,template="BodyTemplate2",text=textContent,background_image_url=render_template('backgroundImageURL'))
 
 @ask.intent('ListBadgeAlertsIntent')
 #Starts a tree to read active alerts for the stated resource kind for a major badge.
@@ -340,13 +458,19 @@ def list_badge_alerts(badge, resource):
 
     speech_output = "There are " + numAllAlerts + " " + badge + " alerts for monitored " + speechify_resource_intent(resource,1) + ". "  + \
                      "Of those " + numCriticalAlerts + " are critical and " + numImmediateAlerts + " are immediate.  Shall I read the critical alerts?"
-
+    textContent = {
+            'primaryText': {
+            'text': speech_output,
+            'type':'PlainText'
+            }
+    }
     with open("sessionData/"+session.sessionId+"badgeAlerts", 'w') as outfile:
         json.dump(alerts, outfile)
     session.attributes["AlertsIndex"] = 0
     session.attributes["CurrentTree"] = "Alerts"
 
-    return question(speech_output)
+    return question(speech_output).display_render(
+    title='Welcome to vRealize Operations',text=textContent,background_image_url=render_template('backgroundImageURL'))
 
 @ask.intent('getAlertsIntent')
 
@@ -369,4 +493,5 @@ def session_ended():
     return "", 200
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    bearertoken = json.loads(vropsGetToken())
+    app.run(debug=False)
