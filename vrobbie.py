@@ -84,11 +84,11 @@ def more_info():
             payload = json.loads('{"resourceId":'+ json.dumps(session.attributes["impactedResources"]) +'}')
             resources = vropsRequest("api/resources/query","POST",payload=payload)
             resourceList = resources["resourceList"]
-            resourceNames = ""
+            resourceDict = {}
             for res in resourceList:
-                resourceNames = resourceNames + (res["resourceKey"]["name"]) + ", "
-            session.attributes["res"] = resourceNames
-            outputSpeech = resourceNames
+                resourceDict[res["resourceKey"]["name"]] = res["identifier"]
+            session.attributes["resourceDict"] = resourceDict
+            outputSpeech = ""
             return outputSpeech
 
 def continues():
@@ -160,6 +160,15 @@ def continues():
 
             return outputSpeech
 
+def on_element_select(token):
+    if session.attributes["CurrentTree"] == "GroupedAlerts":
+        resource = vropsRequest("api/resources/query","GET",querystring="resourceId"+token)["resourceList"][0]
+        resourceProps = vropsRequest("api/resources/"+token+"/properties","GET")
+        if resource["resourceKindKey"] == "VirtualMachine":
+            #Build complete response Here
+            vmname = resource["resourceKey"]["name"]
+            vcpu = resourceProps["property"]["value"] for name, value in resourceProps["property"]     
+
 def backout():
     if session.attributes["CurrentTree"] == "Resource":
         session.attributes["CurrentTree"] = "Alerts"
@@ -176,14 +185,13 @@ def backout():
         outputSpeech = "I am waiting for your query"
     return outputSpeech
 
-#def list_builder(list):
-
 def interactive_resp(data):
     if session.attributes["CurrentTree"] == "GroupedAlerts":
-        respList = data.split(", ")
         listItems = []
-        for res in respList:
+        resDict = session.attributes["resourceDict"]
+        for res in resDict:
             listItem = {
+                "token":resDict[res],
                 "textContent": {
                     "primaryText": {
                         "text":res,
@@ -349,7 +357,7 @@ def yesIntent():
     image = ""
     if (session.attributes["CurrentTree"] == "GroupedAlerts"):
         title = "Alerts by Definition"
-        image = render_template('alert' + criticality + 'ImageURL')
+        image = render_template('alert' + session.attributes['groupCriticality'] + 'ImageURL')
 
     return question(outputSpeech).display_render(
     title=title,template="BodyTemplate2",text=textContent,background_image_url=render_template('backgroundImageURL'),image=image)
@@ -358,8 +366,20 @@ def yesIntent():
 
 def nextIntent():
     outputSpeech = continues()
+    textContent = {
+        'primaryText': {
+        'text':outputSpeech,
+        'type':'PlainText'
+        }
+    }
+    title = 'Welcome to vRealize Operations'
+    image = ""
+    if (session.attributes["CurrentTree"] == "GroupedAlerts"):
+        title = "Alerts by Definition"
+        image = render_template('alert' + session.attributes['groupCriticality'] + 'ImageURL')
+
     return question(outputSpeech).display_render(
-    title='Welcome to vRealize Operations',template="BodyTemplate2",text=textContent,background_image_url=render_template('backgroundImageURL'))
+    title=title,template="BodyTemplate2",text=textContent,background_image_url=render_template('backgroundImageURL'),image=image)
 
 @ask.intent('MoreInformationIntent')
 
@@ -410,7 +430,7 @@ def group_criticality_alerts(criticality, resource):
         'activeOnly': True,
         'alertCriticality': [criticality.upper()]
     }
-
+    session.attributes["groupCriticality"] = criticality
     alerts = vropsRequest(request,method,payload=payload)
 
     numAllAlerts = str(alerts["pageInfo"]["totalCount"])
@@ -472,6 +492,16 @@ def list_badge_alerts(badge, resource):
     return question(speech_output).display_render(
     title='Welcome to vRealize Operations',text=textContent,background_image_url=render_template('backgroundImageURL'))
 
+@ask.display_element_selected
+
+def element():
+    outputSpeech = on_element_select(request["token"])
+    if (session.attributes["CurrentTree"] == "GroupedAlerts"):
+        enhancedResponse = interactive_resp(outputSpeech)
+        return enhancedResponse
+    else:
+        return question(outputSpeech).display_render(
+        title='Welcome to vRealize Operations',template="BodyTemplate2",text=textContent,background_image_url=render_template('backgroundImageURL'))
 @ask.intent('getAlertsIntent')
 
 @ask.intent('getOverallStatus')
