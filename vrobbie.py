@@ -10,7 +10,7 @@ import os
 from operator import itemgetter
 from itertools import groupby
 from flask import Flask, render_template
-from flask_ask import Ask, statement, question, session
+from flask_ask import Ask, statement, question, session, request, context, version
 
 # Vars and Configurations
 bearertoken = ""
@@ -131,9 +131,9 @@ def continues():
                 resourceText = "resources are"
 
             if (len(alerts)-1 == session.attributes["AlertsIndex"]):
-                outputSpeech = "For the alert. {0}. {1} {2} impacted.  There are no more alerts.  More information on this alert?".format(alertDefinition, numOfResources, resourceText)
+                outputSpeech = "For the alert: {0}, {1} {2} impacted.  There are no more alerts.  More information on this alert?".format(alertDefinition, numOfResources, resourceText)
             else:
-                outputSpeech = "For the alert. {0}. {1} {2} impacted. Next alert or more info?".format(alertDefinition, numOfResources, resourceText)
+                outputSpeech = "For the alert: {0}, {1} {2} impacted. Next or more info?".format(alertDefinition, numOfResources, resourceText)
                 session.attributes["AlertsIndex"] += 1
 
             return outputSpeech
@@ -162,12 +162,38 @@ def continues():
 
 def on_element_select(token):
     if session.attributes["CurrentTree"] == "GroupedAlerts":
-        resource = vropsRequest("api/resources/query","GET",querystring="resourceId"+token)["resourceList"][0]
+        resource = vropsRequest("api/resources/"+token,"GET")
         resourceProps = vropsRequest("api/resources/"+token+"/properties","GET")
-        if resource["resourceKindKey"] == "VirtualMachine":
+        resourceLatest = vropsRequest("api/resources/"+token+"/stats/latest","GET")
+        if resource["resourceKey"]["resourceKindKey"] == "VirtualMachine":
             #Build complete response Here
             vmname = resource["resourceKey"]["name"]
-            vcpu = resourceProps["property"]["value"] for name, value in resourceProps["property"]     
+            guestOS = [d["value"] for d in resourceProps["property"] if d["name"]=="config|guestFullName"][0]
+            numCpu = [d["value"] for d in resourceProps["property"] if d["name"]=="config|hardware|numCpu"][0]
+            memKB = [d["value"] for d in resourceProps["property"] if d["name"]=="config|hardware|memoryKB"][0]
+            toolsStatus = [d["value"] for d in resourceProps["property"] if d["name"]=="summary|guest|toolsRunningStatus"][0]
+            toolsVersion = [d["value"] for d in resourceProps["property"] if d["name"]=="summary|guest|toolsVersion"][0]
+            guestDiskPercent = [d["data"] for d in resourceLatest["values"]["stat-list"]["stat"] if d["statKey"]=="guestfilesystem|percentage_total"][0]
+
+        text = {
+            "secondaryText": {
+                "type": "RichText",
+                "text": "<br/><b>Number of vCPU: </b>" + numCpu + "<br/>" + \
+                        "<b>Memory Allocation (KB): </b>" + memKB + "<br/>" + \
+                        "<b>Guest OS Name: </b>" + guestOS + "<br/>" + \
+                        "<b>Tools Status: </b>" + toolsStatus + "<br/>" + \
+                        "<b>Tools Version: </b>" + toolsVersion + "<br/>" + \
+                        "<b>Guest Filesystem Used: </b>" + guestDiskPercent + "%%<br/>"
+            },
+            "primaryText": {
+                "type": "RichText",
+                "text": "<font size='3'>"+resource["resourceKey"]["name"]+"</font>"
+            }
+        }
+
+        fullResponse = question("Here are the " + resource["resourceKey"]["resourceKindKey"] + " details"). \
+        display_render(title=resource["resourceKey"]["resourceKindKey"] + "details",template="BodyTemplate1",text=text,background_image_url=render_template('backgroundImageURL'),backButton='VISIBILE')
+        return fullResponse
 
 def backout():
     if session.attributes["CurrentTree"] == "Resource":
@@ -336,12 +362,13 @@ def welcome_msg():
     welcome_msg = render_template('welcome')
     textContent = {
         'primaryText': {
-        'text':'Intelligent Operations',
-        'type':'PlainText'
+        'text':'<font size="7">Intelligent Operations</font>',
+        'type':'RichText'
         }
     }
     return question(welcome_msg).display_render(
-    title='Welcome to vRealize Operations',template="BodyTemplate2",text=textContent,background_image_url=render_template('backgroundImageURL'),hintText="Get Critical VM alerts")
+    title='Welcome to vRealize Operations',template="BodyTemplate2",text=textContent,background_image_url=render_template('backgroundImageURL'),image=render_template('vrops340x340ImageURL'), \
+    hintText="Get Critical VM alerts")
 
 @ask.intent('AMAZON.YesIntent')
 
@@ -349,8 +376,8 @@ def yesIntent():
     outputSpeech = continues()
     textContent = {
         'primaryText': {
-        'text':outputSpeech,
-        'type':'PlainText'
+        'text':"<font size='7'>"+outputSpeech+"</font>",
+        'type':'RichText'
         }
     }
     title = 'Welcome to vRealize Operations'
@@ -360,7 +387,7 @@ def yesIntent():
         image = render_template('alert' + session.attributes['groupCriticality'] + 'ImageURL')
 
     return question(outputSpeech).display_render(
-    title=title,template="BodyTemplate2",text=textContent,background_image_url=render_template('backgroundImageURL'),image=image)
+    title=title,template="BodyTemplate1",text=textContent,background_image_url=render_template('backgroundImageURL'),image=image)
 
 @ask.intent('AMAZON.NextIntent')
 
@@ -368,8 +395,8 @@ def nextIntent():
     outputSpeech = continues()
     textContent = {
         'primaryText': {
-        'text':outputSpeech,
-        'type':'PlainText'
+        'text':"<font size='7'>"+outputSpeech+"</font>",
+        'type':'RichText'
         }
     }
     title = 'Welcome to vRealize Operations'
@@ -439,8 +466,8 @@ def group_criticality_alerts(criticality, resource):
                     "Shall I read the alerts by alert definition?"
     textContent = {
             'primaryText': {
-            'text': speech_output,
-            'type':'PlainText'
+            'text': "<font size='7'>" + speech_output + "</font>",
+            'type':'RichText'
             }
     }
     groupedAlerts = []
@@ -453,7 +480,7 @@ def group_criticality_alerts(criticality, resource):
     session.attributes["CurrentTree"] = "GroupedAlerts"
     title = "Total " + criticality + " alerts for " + speechify_resource_intent(resource,1) + "."
     return question(speech_output).display_render(
-    title=title,template="BodyTemplate2",text=textContent,background_image_url=render_template('backgroundImageURL'))
+    title=title,template="BodyTemplate1",text=textContent,background_image_url=render_template('backgroundImageURL'))
 
 @ask.intent('ListBadgeAlertsIntent')
 #Starts a tree to read active alerts for the stated resource kind for a major badge.
@@ -495,13 +522,9 @@ def list_badge_alerts(badge, resource):
 @ask.display_element_selected
 
 def element():
-    outputSpeech = on_element_select(request["token"])
-    if (session.attributes["CurrentTree"] == "GroupedAlerts"):
-        enhancedResponse = interactive_resp(outputSpeech)
-        return enhancedResponse
-    else:
-        return question(outputSpeech).display_render(
-        title='Welcome to vRealize Operations',template="BodyTemplate2",text=textContent,background_image_url=render_template('backgroundImageURL'))
+    fullResponse = on_element_select(request["token"])
+    return fullResponse
+
 @ask.intent('getAlertsIntent')
 
 @ask.intent('getOverallStatus')
