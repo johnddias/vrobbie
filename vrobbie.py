@@ -7,6 +7,7 @@ import time
 import re
 import sys
 import os
+from threading import Thread
 from operator import itemgetter
 from itertools import groupby
 from flask import Flask, render_template
@@ -15,20 +16,27 @@ from flask_ask import Ask, statement, question, session, request, context, versi
 # Vars and Configurations
 bearertoken = ""
 
-# Edit with IP or FQDN of vrops node
+# Edit with IP or FQDN of vrops and LI node
 vropsHost = "10.140.50.30"
+liHost = "10.140.44.20"
 # Authentication is intially via credentials set.  Subsequent calls use a
 # bearer token.
 vropsuser = "admin"
 vropspassword = "VMware1!"
 vropsauthsource = "local"
+liprovider = "ActiveDirectory"
+liusername = "diasj"
+lipassword = "VMware1!"
 # For some labs, using self-signed will result in error during request due to cert check
-# flip this flag to False to bypass certificate checking in those cases
+# flip this flag to False to bypass certificate checking in those cases.  I have suppressed the warning
+# normally thrown by urllib3 but this is NOT RECOMMENDED!
 verify = False
+if not verify:
+    requests.packages.urllib3.disable_warnings()
 
 app = Flask(__name__)
 ask = Ask(app,"/")
-logging.getLogger("flask_ask").setLevel(logging.DEBUG)
+logging.getLogger("flask_ask").setLevel(logging.INFO)
 
 ##############################################
 # HELPERS
@@ -36,6 +44,21 @@ logging.getLogger("flask_ask").setLevel(logging.DEBUG)
 # - Handling voice service errors
 # - Parsing and preparing response_msg
 ##############################################
+def datacenter_report():
+    while True:
+        dc_report_dict = dict()
+        token = json.loads(liGetToken(liusername, lipassword, liprovider))
+        dc_report_dict["vMotions"] = json.loads(loginsightQuery("timestamp/LAST 86400000", "bin-width=all&aggregation-function=UCOUNT&aggregation-field=com.vmware.vsphere:vmw_hostd_vmotion_id", token["sessionId"]))
+        dc_report_dict["DRS vMotions"] = json.loads(loginsightQuery("timestamp/LAST 86400000/text/CONTAINS DrmExecuteVMotionLRO", "bin-width=all&aggregation-function=COUNT", token["sessionId"]))
+        dc_report_dict["VMs Created"] = json.loads(loginsightQuery("timestamp/LAST 86400000/vc_event_type/CONTAINS com.vmware.vim25.VmCreatedEvent/vc_event_type/CONTAINS com.vmware.vim25.vmclonedevent", "bin-width=all&aggregation-function=COUNT", token["sessionId"]))
+        dc_report_dict["VMs Deleted"] = json.loads(loginsightQuery("timestamp/LAST 86400000/vc_event_type/CONTAINS com.vmware.vim25.VmRemovedEvent", "bin-width=all&aggregation-function=COUNT", token["sessionId"]))
+        dc_report_dict["RConsole Sessions"] = json.loads(loginsightQuery("timestamp/LAST 86400000/text/CONTAINS Local connection for mks established", "bin-width=all&aggregation-function=COUNT", token["sessionId"]))
+
+        with open("prefetch/dcreport", 'w') as outfile:
+            json.dump(dc_report_dict, outfile)
+
+        print "dcreport updated at " + time.strftime("%Y-%m-%d %H:%M:%S")
+        time.sleep(300)
 
 def more_info():
     #Called when user wants more information on the impacted resource from the Alerts tree
@@ -173,7 +196,7 @@ def on_element_select(token):
             memKB = [d["value"] for d in resourceProps["property"] if d["name"]=="config|hardware|memoryKB"][0]
             toolsStatus = [d["value"] for d in resourceProps["property"] if d["name"]=="summary|guest|toolsRunningStatus"][0]
             toolsVersion = [d["value"] for d in resourceProps["property"] if d["name"]=="summary|guest|toolsVersion"][0]
-            guestDiskPercent = [d["data"] for d in resourceLatest["values"]["stat-list"]["stat"] if d["statKey"]=="guestfilesystem|percentage_total"][0]
+            #guestDiskPercent = [d["statKey"]["data"] for d in resourceLatest["values"]["stat-list"]["stat"] if d["statKey"]["key"]=="guestfilesystem|percentage_total"]
 
         text = {
             "secondaryText": {
@@ -182,8 +205,8 @@ def on_element_select(token):
                         "<b>Memory Allocation (KB): </b>" + memKB + "<br/>" + \
                         "<b>Guest OS Name: </b>" + guestOS + "<br/>" + \
                         "<b>Tools Status: </b>" + toolsStatus + "<br/>" + \
-                        "<b>Tools Version: </b>" + toolsVersion + "<br/>" + \
-                        "<b>Guest Filesystem Used: </b>" + guestDiskPercent + "%%<br/>"
+                        "<b>Tools Version: </b>" + toolsVersion + "<br/>"
+                        #"<b>Guest Filesystem Used: </b>" + guestDiskPercent + "%%<br/>"
             },
             "primaryText": {
                 "type": "RichText",
@@ -233,18 +256,26 @@ def interactive_resp(data):
 
     return enhancedResponse
 
+def liGetToken(user=liusername, passwd=lipassword, authSource=liprovider):
+        url = "https://" + liHost + "/api/v1/sessions"
+        payload = "{\n  \"provider\":\"" + liprovider + "\",\n  \"username\":\"" + liusername + "\",\n  \"password\":\"" + lipassword + "\"\n}"
+        headers = {
+            'accept': "application/json",
+            'content-type': "application/json"
+            }
+        response = requests.request("POST", url, data=payload, headers=headers, verify=verify)
+
+        return response.text
+
 def vropsGetToken(user=vropsuser, passwd=vropspassword, authSource=vropsauthsource, host=vropsHost):
     if not bearertoken:
         url = "https://" + host + "/suite-api/api/auth/token/acquire"
         payload = "{\r\n  \"username\" : \"" + vropsuser + "\",\r\n  \"authSource\" : \"" + vropsauthsource + "\",\r\n  \"password\" : \"" + vropspassword + "\",\r\n  \"others\" : [ ],\r\n  \"otherAttributes\" : {\r\n  }\r\n}"
-        print payload
-        print url
         headers = {
             'accept': "application/json",
             'content-type': "application/json",
             }
         response = requests.request("POST", url, data=payload, headers=headers, verify=verify)
-        print response.text
         return response.text
     elif int(bearertoken["validity"])/1000 < time.time():
         url = "https://" + host + "/suite-api/api/versions"
@@ -267,10 +298,19 @@ def vropsGetToken(user=vropsuser, passwd=vropspassword, authSource=vropsauthsour
     else:
         return json.dumps(bearertoken)
 
+def loginsightQuery(constraints,params,token):
+    url = "https://" + liHost + "/api/v1/aggregated-events/" + constraints + "?" + params
+    headers = {
+        'authorization': 'Bearer ' +  token
+    }
+    response = requests.request('GET', url, headers=headers, verify=verify)
+
+    return response.text
+
+
 def vropsRequest(request,method,querystring="",payload=""):
     global bearertoken
     bearertoken = json.loads(vropsGetToken())
-    print bearertoken
     url = "https://" + vropsHost + "/suite-api/" + request
     querystring = querystring
     headers = {
@@ -292,7 +332,6 @@ def vropsRequest(request,method,querystring="",payload=""):
     return response.json()
 
 def translate_resource_intent(resource):
-    #print("Stated intent " + resource)
     resString = ""
     vropsResKindString = {
         'bms':'virtualmachine',
@@ -366,9 +405,12 @@ def welcome_msg():
         'type':'RichText'
         }
     }
-    return question(welcome_msg).display_render(
-    title='Welcome to vRealize Operations',template="BodyTemplate2",text=textContent,background_image_url=render_template('backgroundImageURL'),image=render_template('vrops340x340ImageURL'), \
-    hintText="Get Critical VM alerts")
+    if (context.System.device.supportedInterfaces.Display):
+        return question(welcome_msg).display_render(
+        title='Welcome to vRealize Operations',template="BodyTemplate2",text=textContent,background_image_url=render_template('backgroundImageURL'),image=render_template('vrops340x340ImageURL'), \
+        hintText="Get Critical VM alerts")
+    else:
+        return question(welcome_msg)
 
 @ask.intent('AMAZON.YesIntent')
 
@@ -386,8 +428,11 @@ def yesIntent():
         title = "Alerts by Definition"
         image = render_template('alert' + session.attributes['groupCriticality'] + 'ImageURL')
 
-    return question(outputSpeech).display_render(
-    title=title,template="BodyTemplate1",text=textContent,background_image_url=render_template('backgroundImageURL'),image=image)
+    if (context.System.device.supportedInterfaces.Display):
+        return question(outputSpeech).display_render(
+        title=title,template="BodyTemplate1",text=textContent,background_image_url=render_template('backgroundImageURL'),image=image)
+    else:
+        return question(outputSpeech)
 
 @ask.intent('AMAZON.NextIntent')
 
@@ -405,8 +450,11 @@ def nextIntent():
         title = "Alerts by Definition"
         image = render_template('alert' + session.attributes['groupCriticality'] + 'ImageURL')
 
-    return question(outputSpeech).display_render(
-    title=title,template="BodyTemplate2",text=textContent,background_image_url=render_template('backgroundImageURL'),image=image)
+    if (context.System.device.supportedInterfaces.Display):
+        return question(outputSpeech).display_render(
+        title=title,template="BodyTemplate2",text=textContent,background_image_url=render_template('backgroundImageURL'),image=image)
+    else:
+        return question(outputSpeech)
 
 @ask.intent('MoreInformationIntent')
 
@@ -418,12 +466,15 @@ def MoreInformationIntent():
         'type':'PlainText'
         }
     }
-    if (session.attributes["CurrentTree"] == "GroupedAlerts"):
+    if ((session.attributes["CurrentTree"] == "GroupedAlerts") and (context.System.device.supportedInterfaces.Display)):
         enhancedResponse = interactive_resp(outputSpeech)
         return enhancedResponse
     else:
-        return question(outputSpeech).display_render(
-        title='Welcome to vRealize Operations',template="BodyTemplate2",text=textContent,background_image_url=render_template('backgroundImageURL'))
+        if (context.System.device.supportedInterfaces.Display):
+            return question(outputSpeech).display_render(
+            title='Welcome to vRealize Operations',template="BodyTemplate2",text=textContent,background_image_url=render_template('backgroundImageURL'))
+        else:
+            return question(outputSpeech)
 
 @ask.intent('AMAZON.NoIntent')
 
@@ -435,14 +486,46 @@ def noIntent():
         'type':'PlainText'
         }
     }
-    return question(outputSpeech).display_render(
-    title='Welcome to vRealize Operations',template="BodyTemplate2",text=textContent,background_image_url=render_template('backgroundImageURL'))
+    if (context.System.device.supportedInterfaces.Display):
+        return question(outputSpeech).display_render(
+        title='Welcome to vRealize Operations',template="BodyTemplate2",text=textContent,background_image_url=render_template('backgroundImageURL'))
+    else:
+        return question(outputSpeech)
 
 @ask.intent('Amazon.CancelIntent')
 
 def cancelIntent():
     outputSpeech = backout()
     return question(outputSpeech)
+
+@ask.intent('DataCenterReportIntent')
+#Runs several Log Insight and vROps queries to build a report for echo show
+#TODO Make sure to add device checking and optimize for echo voice only
+def dcreport():
+    listItems = []
+    with open("prefetch/dcreport", 'r') as dcreport:
+          report_data = json.load(dcreport)
+          for metric, value in report_data.iteritems():
+              item = "Number of " + metric + ": "
+              if not (value["bins"]):
+                  item = item + "None"
+              else:
+                  item = item + str(value["bins"][0]["value"])
+              listItem = {
+                  "token":metric,
+                    "textContent": {
+                      "primaryText": {
+                          "text":item,
+                          "type":"PlainText"
+                          }
+                      }
+                  }
+              listItems.append(listItem)
+
+    enhancedResponse = question("Datacenter Operations in the Past 24 Hours.").list_display_render(template="ListTemplate1", title="Datacenter Operations", backButton="VISIBILE", token=None, \
+    background_image_url=render_template('backgroundImageURL'), listItems=listItems)
+
+    return enhancedResponse
 
 @ask.intent('GroupAlertsIntent')
 #Starts a tree to read active alerts grouped by alert definition for the stated resource kind
@@ -516,8 +599,11 @@ def list_badge_alerts(badge, resource):
     session.attributes["AlertsIndex"] = 0
     session.attributes["CurrentTree"] = "Alerts"
 
-    return question(speech_output).display_render(
-    title='Welcome to vRealize Operations',text=textContent,background_image_url=render_template('backgroundImageURL'))
+    if (context.System.device.supportedInterfaces.Display):
+        return question(speech_output).display_render(
+        title='Welcome to vRealize Operations',text=textContent,background_image_url=render_template('backgroundImageURL'))
+    else:
+        return question(speech_output)
 
 @ask.display_element_selected
 
@@ -547,4 +633,6 @@ def session_ended():
 
 if __name__ == '__main__':
     bearertoken = json.loads(vropsGetToken())
+    background_thread = Thread(target=datacenter_report)
+    background_thread.start()
     app.run(debug=False)
