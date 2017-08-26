@@ -3,6 +3,7 @@
 import json
 import logging
 import requests
+import collections
 import time
 import re
 import sys
@@ -36,7 +37,7 @@ if not verify:
 
 app = Flask(__name__)
 ask = Ask(app,"/")
-logging.getLogger("flask_ask").setLevel(logging.INFO)
+logging.getLogger("flask_ask").setLevel(logging.DEBUG)
 
 ##############################################
 # HELPERS
@@ -401,7 +402,7 @@ def welcome_msg():
     welcome_msg = render_template('welcome')
     textContent = {
         'primaryText': {
-        'text':'<font size="7">Intelligent Operations</font>',
+        'text':'<font size="3">Intelligent Operations</font>',
         'type':'RichText'
         }
     }
@@ -418,7 +419,7 @@ def yesIntent():
     outputSpeech = continues()
     textContent = {
         'primaryText': {
-        'text':"<font size='7'>"+outputSpeech+"</font>",
+        'text':"<font size='3'>"+outputSpeech+"</font>",
         'type':'RichText'
         }
     }
@@ -440,7 +441,7 @@ def nextIntent():
     outputSpeech = continues()
     textContent = {
         'primaryText': {
-        'text':"<font size='7'>"+outputSpeech+"</font>",
+        'text':"<font size='3'>"+outputSpeech+"</font>",
         'type':'RichText'
         }
     }
@@ -469,12 +470,15 @@ def MoreInformationIntent():
     if ((session.attributes["CurrentTree"] == "GroupedAlerts") and (context.System.device.supportedInterfaces.Display)):
         enhancedResponse = interactive_resp(outputSpeech)
         return enhancedResponse
+    elif (context.System.device.supportedInterfaces.Display):
+        return question(outputSpeech).display_render(
+        title='Welcome to vRealize Operations',template="BodyTemplate2",text=textContent,background_image_url=render_template('backgroundImageURL'))
     else:
-        if (context.System.device.supportedInterfaces.Display):
-            return question(outputSpeech).display_render(
-            title='Welcome to vRealize Operations',template="BodyTemplate2",text=textContent,background_image_url=render_template('backgroundImageURL'))
-        else:
+        if (session.attributes["CurrentTree"]):
             return question(outputSpeech)
+        else:
+            return question("I'm sorry, I don't understand your request")
+
 
 @ask.intent('AMAZON.NoIntent')
 
@@ -498,32 +502,104 @@ def cancelIntent():
     outputSpeech = backout()
     return question(outputSpeech)
 
-@ask.intent('DataCenterReportIntent')
+@ask.intent('vSANStatusIntent')
+def vsanstatus():
+#build query Parameters
+    vsanworld_res = vropsRequest("api/resources","GET",querystring="resourceKind=vSAN World")
+    vsan_res_id = vsanworld_res["resourceList"][0]["identifier"]
+    begin = int(round(time.time()*1000-21600000))
+    end = int(round(time.time()*1000))
+    querystring = {"begin":begin,"end":end,"rollUpType":"AVG","intervalQuantifier":"7", \
+        "intervalType":"HOURS",\
+        "statKey": [ "summary|total_latency", \
+        "summary|total_iops", \
+        "summary|total_number_vms", \
+        "summary|total_cluster_count", \
+        "summary|vsan_diskspace_capacity", \
+        "summary|vsan_diskspace_capacity_used", \
+        "summary|remaining_capacity" ], \
+        "resourceId":vsan_res_id, }
+#execute query and process
+    response = vropsRequest("api/resources/stats","GET",querystring)
+
+#building response
+    stats_dict = dict()
+    for statitem in response["values"][0]["stat-list"]["stat"]:
+        stat_key = statitem["statKey"]["key"].split("|")[1].replace("_"," ").title()
+        if (stat_key.find("Cluster Count") != -1):
+            stat_key = "Number of Clusters"
+        if (stat_key.find("Capacity") != -1):
+            stat_key = stat_key + " in TB"
+        if (stat_key.find("Vsan") != -1):
+            stat_key = stat_key.replace("Vsan","")
+        if (stat_key.find("Total") != -1):
+            stat_key = stat_key.replace("Total","Average")
+        if (stat_key.find("Iops") != -1):
+            stat_key = stat_key.replace("Iops","IOPS")
+        if (stat_key.find("Vms") != -1):
+            stat_key = stat_key.replace("Vms","of VMs")
+            stat_key = stat_key.replace("Average","")
+        stats_dict[stat_key] = str(int(statitem["data"][0]))
+
+#TODO add ordering to display so items appear in some logical ordering
+
+    secondaryText = "<br/>"
+    for key, value in sorted(stats_dict.iteritems(), key=lambda (k,v): (v,k)):
+        secondaryText = secondaryText + "<b> %s:</b> %s <br/>" %(key,value)
+    secondaryText = secondaryText + "<br/>"
+
+    text = {
+        "tertiaryText": {
+            "type":"RichText",
+            "text":"6 hour average statistics shown."
+        },
+        "secondaryText": {
+            "type": "RichText",
+            "text": secondaryText
+        },
+        "primaryText": {
+            "type": "RichText",
+            "text": "<b><font size='7'>vSAN Status</font></b>"
+        }
+    }
+
+    enhancedResponse = question("v SAN Status Report.").display_render(template="BodyTemplate2", title="Datacenter Operations", text=text,backButton="VISIBILE", token=None, \
+    background_image_url=render_template('backgroundImageURL'),image=render_template('vsan340x340ImageURL'))
+
+    return enhancedResponse
+
+@ask.intent('DataCenterCapacityIntent')
+def dccapacity():
+    return question("Data Center Capacity Report")
+
+@ask.intent('DataCenterActivityIntent')
 #Runs several Log Insight and vROps queries to build a report for echo show
 #TODO Make sure to add device checking and optimize for echo voice only
-def dcreport():
-    listItems = []
+def dcactivity():
+    secondaryText = "<br/>"
     with open("prefetch/dcreport", 'r') as dcreport:
-          report_data = json.load(dcreport)
-          for metric, value in report_data.iteritems():
-              item = "Number of " + metric + ": "
-              if not (value["bins"]):
-                  item = item + "None"
-              else:
-                  item = item + str(value["bins"][0]["value"])
-              listItem = {
-                  "token":metric,
-                    "textContent": {
-                      "primaryText": {
-                          "text":item,
-                          "type":"PlainText"
-                          }
-                      }
-                  }
-              listItems.append(listItem)
+        report_data = json.load(dcreport)
+        for metric, value in report_data.iteritems():
+            item = "<b>Number of " + metric + ": </b>"
+            if not (value["bins"]):
+                item = item + "None"
+            else:
+                item = item + str(value["bins"][0]["value"])
+            secondaryText = secondaryText + item + "<br/>"
 
-    enhancedResponse = question("Datacenter Operations in the Past 24 Hours.").list_display_render(template="ListTemplate1", title="Datacenter Operations", backButton="VISIBILE", token=None, \
-    background_image_url=render_template('backgroundImageURL'), listItems=listItems)
+    text = {
+        "secondaryText": {
+            "type": "RichText",
+            "text": secondaryText
+        },
+        "primaryText": {
+            "type": "RichText",
+            "text": "<font size='5'>Datacenter Activity Past 24 Hours</font>"
+        }
+    }
+
+    enhancedResponse = question("Datacenter Activity in the Past 24 Hours.").display_render(template="BodyTemplate2", title="Datacenter Operations", text=text,backButton="VISIBILE", token=None, \
+    background_image_url=render_template('backgroundImageURL'), image=render_template('vsphere340x340ImageURL'))
 
     return enhancedResponse
 
@@ -563,7 +639,7 @@ def group_criticality_alerts(criticality, resource):
     session.attributes["CurrentTree"] = "GroupedAlerts"
     title = "Total " + criticality + " alerts for " + speechify_resource_intent(resource,1) + "."
     return question(speech_output).display_render(
-    title=title,template="BodyTemplate1",text=textContent,background_image_url=render_template('backgroundImageURL'))
+    title=title,template="BodyTemplate1",text=textContent,background_image_url=render_template('backgroundImageURL',image="alertcriticalImageURL"))
 
 @ask.intent('ListBadgeAlertsIntent')
 #Starts a tree to read active alerts for the stated resource kind for a major badge.
@@ -590,8 +666,8 @@ def list_badge_alerts(badge, resource):
                      "Of those " + numCriticalAlerts + " are critical and " + numImmediateAlerts + " are immediate.  Shall I read the critical alerts?"
     textContent = {
             'primaryText': {
-            'text': speech_output,
-            'type':'PlainText'
+            'text': "<font size='3'>" + speech_output + "</font>",
+            'type':'RichText'
             }
     }
     with open("sessionData/"+session.sessionId+"badgeAlerts", 'w') as outfile:
@@ -634,5 +710,6 @@ def session_ended():
 if __name__ == '__main__':
     bearertoken = json.loads(vropsGetToken())
     background_thread = Thread(target=datacenter_report)
+    background_thread.daemon = True
     background_thread.start()
-    app.run(debug=False)
+    app.run(debug=True)

@@ -8,3 +8,5 @@ alertwarningImageURL: https://s3-us-west-2.amazonaws.com/blackmesaresearch/warni
 alertimmediateImageURL: https://s3-us-west-2.amazonaws.com/blackmesaresearch/immediate.png
 alertinfoImageURL: https://s3-us-west-2.amazonaws.com/blackmesaresearch/info.png
 vrops340x340ImageURL: https://s3-us-west-2.amazonaws.com/blackmesaresearch/vrops-logo-340x340.png
+vsan340x340ImageURL: https://s3-us-west-2.amazonaws.com/blackmesaresearch/vsan-logo.jpg
+vsphere340x340ImageURL: https://s3-us-west-2.amazonaws.com/blackmesaresearch/vsphere-logo.png
