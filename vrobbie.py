@@ -18,16 +18,16 @@ from flask_ask import Ask, statement, question, session, request, context, versi
 bearertoken = ""
 
 # Edit with IP or FQDN of vrops and LI node
-vropsHost = "10.140.50.30"
-liHost = "10.140.44.20"
+vropsHost = ""
+liHost = ""
 # Authentication is intially via credentials set.  Subsequent calls use a
 # bearer token.
-vropsuser = "admin"
-vropspassword = "VMware1!"
+vropsuser = ""
+vropspassword = ""
 vropsauthsource = "local"
 liprovider = "ActiveDirectory"
-liusername = "diasj"
-lipassword = "VMware1!"
+liusername = ""
+lipassword = ""
 # For some labs, using self-signed will result in error during request due to cert check
 # flip this flag to False to bypass certificate checking in those cases.  I have suppressed the warning
 # normally thrown by urllib3 but this is NOT RECOMMENDED!
